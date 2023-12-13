@@ -18,6 +18,7 @@ namespace ConnectionRabbit.Infrastructure.RabbitMq.Services
         private readonly ConnectionContext _connectionContext;
         private IConnection _connection;
         private IModel _channel;
+        private int _messagesEnqueued;
 
 
         public RabbitMQContext(ConnectionContext connectionContext)
@@ -37,6 +38,7 @@ namespace ConnectionRabbit.Infrastructure.RabbitMq.Services
             _channel = _connection.CreateModel();
             _channel.BasicQos(0, connectionContext.LimitMessages, false);
             _connectionContext = connectionContext;
+            _messagesEnqueued = 0;
         }
 
         public void Publish(string publishBody, QueueStructure queue, Dictionary<string, object>? headers = null)
@@ -61,7 +63,6 @@ namespace ConnectionRabbit.Infrastructure.RabbitMq.Services
                                 );
         }
 
-
         public void Subscribe<TEvent>(IEventHandler<TEvent> handler, string queue) where TEvent : IEvent
         {
             AsyncEventingBasicConsumer consumer = new AsyncEventingBasicConsumer(_channel);
@@ -81,16 +82,21 @@ namespace ConnectionRabbit.Infrastructure.RabbitMq.Services
                     PropertyInfo? RetriesProp = resultado.GetType().GetProperty("Retries");
                     if (RetriesProp != null)
                         RetriesProp.SetValue(resultado, checkCount(ea.BasicProperties.Headers));
+                    await Task.Delay(1000);
+                    await AvailableToProcess();
+                    IncrementMessageCount();
                     RabbitMqResponse result = await handler.HandlerAsync(resultado);
                     if (result.Processed)
                     {
                         _channel.BasicAck(ea.DeliveryTag, false);
+                        DecrementMessageCount();
                     }
                     else
                     {
                         if (checkCount(ea.BasicProperties.Headers) == 3)
                         {
                             _channel.BasicAck(ea.DeliveryTag, false);
+                            DecrementMessageCount();
                         }
                         else
                         {
@@ -130,6 +136,33 @@ namespace ConnectionRabbit.Infrastructure.RabbitMq.Services
                 }
             }
             return 0;
+        }
+
+        private void IncrementMessageCount() 
+        {
+            _messagesEnqueued++;
+        }
+
+        private void DecrementMessageCount()
+        {
+            _messagesEnqueued--;
+        }
+
+        private async Task AvailableToProcess()
+        {
+            int maxQueue = 3;
+            bool _continue = false;
+            while (!_continue)
+            {
+                if (_messagesEnqueued >= maxQueue)
+                {
+                    await Task.Delay(100);
+                }
+                else
+                {
+                    _continue = true;
+                }
+            }
         }
     }
 }
